@@ -248,7 +248,6 @@ namespace Network {
         }
     }
 
-    [Serializable]
     public struct ServerConfiguration {
         public int TcpPort;
         public int UdpPort;
