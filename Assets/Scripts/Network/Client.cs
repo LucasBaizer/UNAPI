@@ -43,7 +43,7 @@ namespace Network {
             Client client = new Client(host, 9292, 9293);
 
             if(OnConnect != null) {
-                OnConnect(client, EventArgs.Empty);
+                NetworkBridge.Invoke(() => OnConnect(client, EventArgs.Empty));
             }
         }
 
@@ -214,7 +214,7 @@ namespace Network {
             Instantiate(resource, position, rotation, null);
         }
 
-        public static void Instantiate(string resource, Vector3 position, Quaternion rotation, NetworkBehaviour parent) {
+        public static void Instantiate(string resource, Vector3 position, Quaternion rotation, object parent) {
             if(!Side.IsClient) {
                 throw new InvalidOperationException("Cannot call client-side functions when not on the client");
             }
@@ -225,7 +225,7 @@ namespace Network {
             Out.WriteString(resource);
             Out.WriteVector3(position);
             Out.WriteQuaternion(rotation);
-            Out.WriteLong(parent == null ? long.MinValue : parent.NetworkId);
+            Out.WriteSceneObject(parent);
             byte count = 0;
             foreach(Transform child in attempt.transform) {
                 NetworkBehaviour c = child.GetComponent<NetworkBehaviour>();

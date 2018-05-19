@@ -40,7 +40,7 @@ namespace Network {
             Server server = new Server(config);
 
             if(OnStart != null) {
-                OnStart(server, EventArgs.Empty);
+                NetworkBridge.Invoke(() => OnStart(server, EventArgs.Empty));
             }
         }
 
@@ -165,18 +165,26 @@ namespace Network {
             return Instantiate(resource, position, rotation, null);
         }
 
-        public static NetworkBehaviour Instantiate(string resource, Vector3 position, Quaternion rotation, NetworkBehaviour parent) {
+        public static NetworkBehaviour Instantiate(string resource, Vector3 position, Quaternion rotation, object parent) {
             if(!Side.IsServer) {
                 throw new InvalidOperationException("Cannot call server-side functions when not on the server");
             }
 
             GameObject attempt = (GameObject) Resources.Load(resource);
             GameObject inst = UnityEngine.Object.Instantiate(attempt, position, rotation);
+            inst.name = attempt.name;
+
             NetworkBehaviour net = inst.GetComponent<NetworkBehaviour>();
             net.transform.UseNetwork = false;
 
             if(parent != null) {
-                net.transform.parent = parent.transform;
+                if(parent is NetworkBehaviour) {
+                    net.transform.parent = ((NetworkBehaviour) parent).transform;
+                } else if(parent is Transform) {
+                    net.transform.parent = (Transform) parent;
+                } else {
+                    throw new InvalidOperationException("Parent must be a NetworkBehaviour or a Transform: " + parent.GetType().FullName);
+                }
             }
 
             net.NetworkId = GenerateId();
@@ -213,7 +221,7 @@ namespace Network {
                 client.Buffer.WriteString(resource);
                 client.Buffer.WriteVector3(position);
                 client.Buffer.WriteQuaternion(rotation);
-                client.Buffer.WriteLong(parent == null ? long.MinValue : parent.NetworkId);
+                client.Buffer.WriteSceneObject(parent);
                 client.Buffer.WriteByte((byte) childIds.Count);
                 foreach(long cid in childIds) {
                     client.Buffer.WriteLong(cid);
@@ -254,7 +262,7 @@ namespace Network {
         public int TickRate;
 
         public static ServerConfiguration Default() {
-            return new ServerConfiguration(9292, 9293, 30);
+            return new ServerConfiguration(9292, 9293, 1);
         }
 
         public ServerConfiguration(int tcp, int udp, int tick) {

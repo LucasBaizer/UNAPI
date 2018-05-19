@@ -37,14 +37,6 @@ namespace Network {
         }
 
         public void SetRemote(string name, object value) {
-            SetRemote(name, value, true);
-        }
-
-        public void SetRemote(string name, object value, bool local) {
-            if(local) {
-                UpdateLocalField(name, value);
-            }
-
             if(IsClient) {
                 if(HasAuthority) {
                     Client.Current.WriteHeader(NetworkData.UpdateField);
@@ -69,7 +61,12 @@ namespace Network {
             }
         }
 
-        public void UpdateLocalField(string name, object value) {
+        public void SetEverywhere(string name, object value) {
+            SetLocal(name, value);
+            SetRemote(name, value);
+        }
+
+        public void SetLocal(string name, object value) {
             FieldInfo field = GetType().GetField(name);
             if(field == null) {
                 field = GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
@@ -115,6 +112,11 @@ namespace Network {
                     client.WriteBufferTcp();
                 }
             }
+        }
+
+        public void InvokeEverywhere(string name, params object[] args) {
+            InvokeLocalMethod(name, args);
+            InvokeRemote(name, args);
         }
 
         public void InvokeLocalMethod(string name, object[] args) {

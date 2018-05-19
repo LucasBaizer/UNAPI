@@ -2,6 +2,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace Network {
     public class NetworkBridge : MonoBehaviour {
@@ -10,6 +11,7 @@ namespace Network {
         public static NetworkBridge Instance;
 
         public List<Invocation> Invocations = new List<Invocation>();
+        private object Lock = new object();
 
         void Awake() {
             Instance = this;
@@ -42,7 +44,9 @@ namespace Network {
                     break;
                 }
             }
-
+            lock(Lock) {
+                Monitor.PulseAll(Lock);
+            }
             yield return null;
         }
 
@@ -58,6 +62,13 @@ namespace Network {
 
         public static void Invoke(Invocation invoke) {
             Instance.Invocations.Add(invoke);
+        }
+
+        public static void AwaitInvoke(Invocation invoke) {
+            Invoke(invoke);
+            lock(Instance.Lock) {
+                Monitor.Wait(Instance.Lock);
+            }
         }
 
         public static void Log(object str) {

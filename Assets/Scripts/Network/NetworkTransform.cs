@@ -167,6 +167,18 @@ namespace Network {
             }
         }
 
+        public Vector3 TransformPoint(Vector3 vec) {
+            return Transform.TransformPoint(vec);
+        }
+
+        public Vector3 InverseTransformPoint(Vector3 vec) {
+            return Transform.InverseTransformPoint(vec);
+        }
+
+        public Transform Find(string name) {
+            return Transform.Find(name);
+        }
+
         public void Detach() {
             Transform.SetParent(null);
 
@@ -196,12 +208,13 @@ namespace Network {
                 Detach();
             }
 
+            Transform.SetParent(parent, worldPositionStays);
+
             NetworkBehaviour net = parent.GetComponent<NetworkBehaviour>();
             if(net == null) {
-                throw new InvalidOperationException("Cannot set the parent of a networked object to a non-networked object");
+                // throw new InvalidOperationException("Cannot set the parent of a networked object to a non-networked object");
+                return;
             }
-
-            Transform.SetParent(parent, worldPositionStays);
 
             if(!UseNetwork) {
                 return;

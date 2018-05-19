@@ -4,6 +4,9 @@ using System.Text;
 
 namespace Network {
     public class ByteBuffer {
+        public const byte NetworkedSO = 0;
+        public const byte LocalSO = 1;
+
         public byte[] Bytes;
         public int Pointer = 0;
 
@@ -122,6 +125,51 @@ namespace Network {
             WriteBytes(BitConverter.GetBytes(l));
         }
 
+        public void WriteSceneObject(object so) {
+            if(so == null) {
+                WriteByte(LocalSO);
+                WriteString("");
+            } else if(so is NetworkBehaviour) {
+                WriteByte(NetworkedSO);
+                WriteLong(so == null ? long.MinValue : ((NetworkBehaviour) so).NetworkId);
+            } else if(so is ObjectRegistration) {
+                WriteByte(NetworkedSO);
+                WriteLong(so == null ? long.MinValue : ((ObjectRegistration) so).Object.NetworkId);
+            } else if(so is Transform) {
+                WriteByte(LocalSO);
+                WriteString(so == null ? "" : GetPath((Transform) so));
+            } else {
+                throw new InvalidOperationException("Scene object must be a NetworkBehaviour, ObjectRegisration, or Transform: " + so.GetType().FullName);
+            }
+        }
+
+        public object ReadSceneObject() {
+            byte type = ReadByte();
+            if(type == NetworkedSO) {
+                long id = ReadLong();
+                if(id == long.MinValue) {
+                    return null;
+                }
+                if(Side.IsServer) {
+                    ObjectRegistration obj = null;
+                    ServerRegistry.GetObject(id, out obj);
+                    return obj;
+                } else {
+                    NetworkBehaviour obj = null;
+                    ClientRegistry.GetObject(id, out obj);
+                    return obj;
+                }
+            } else if(type == LocalSO) {
+                string str = ReadString();
+                if(string.IsNullOrEmpty(str)) {
+                    return null;
+                }
+                return GetTransform(str);
+            } else {
+                throw new InvalidOperationException("Invalid scene object type: " + type);
+            }
+        }
+
         public long ReadLong() {
             return BitConverter.ToInt64(ReadBytes(8), 0);
         }
@@ -172,6 +220,19 @@ namespace Network {
 
         public bool ReadBool() {
             return ReadByte() == 1;
+        }
+
+        private static string GetPath(Transform transform) {
+            string path = "/" + transform.name;
+            while(transform.parent != null) {
+                transform = transform.parent;
+                path = transform.name + "/" + path;
+            }
+            return path;
+        }
+
+        private static Transform GetTransform(string path) {
+            return GameObject.Find(path).transform;
         }
     }
 }

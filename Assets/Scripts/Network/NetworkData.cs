@@ -43,7 +43,8 @@ namespace Network {
                     string resourcePath = data.ReadString();
                     Vector3 position = data.ReadVector3();
                     Quaternion rotation = data.ReadQuaternion();
-                    long parentId = data.ReadLong();
+                    object parent = null;
+                    NetworkBridge.AwaitInvoke(() => parent = data.ReadSceneObject());
                     byte childCount = data.ReadByte();
 
                     long[] ids = new long[childCount + 1];
@@ -65,12 +66,14 @@ namespace Network {
                         net.transform.position = position;
                         net.transform.rotation = rotation;
 
-                        if(parentId == long.MinValue) {
+                        if(parent == null) {
                             net.transform.Detach();
                         } else {
-                            ObjectRegistration parentObj;
-                            ServerRegistry.GetObject(parentId, out parentObj);
-                            net.transform.SetParent(parentObj.Object.transform);
+                            if(parent is ObjectRegistration) {
+                                net.transform.SetParent(((ObjectRegistration) parent).Object.transform);
+                            } else if(parent is Transform) {
+                                net.transform.SetParent((Transform) parent);
+                            }
                         }
 
                         ServerRegistry.Objects[ids[0]] = new ObjectRegistration(net, clientId, resourcePath, false, childIds);
@@ -79,7 +82,7 @@ namespace Network {
                         int idCount = 0;
                         for(int i = 0; i < inst.transform.childCount; i++) {
                             Transform child = inst.transform.GetChild(i);
-                            NetworkBehaviour cnet = inst.GetComponent<NetworkBehaviour>();
+                            NetworkBehaviour cnet = child.GetComponent<NetworkBehaviour>();
 
                             if(cnet != null) {
                                 cnet.NetworkId = childIds[idCount++];
@@ -103,7 +106,7 @@ namespace Network {
                         to.Buffer.WriteString(resourcePath);
                         to.Buffer.WriteVector3(position);
                         to.Buffer.WriteQuaternion(rotation);
-                        to.Buffer.WriteLong(parentId);
+                        to.Buffer.WriteSceneObject(parent);
                         to.Buffer.WriteByte(childCount);
                         foreach(long id in childIds) {
                             to.Buffer.WriteLong(id);
@@ -156,8 +159,6 @@ namespace Network {
                     }
                 } else if(dType == UpdateParent) {
                     long id = data.ReadLong();
-                    long newParent = data.ReadLong();
-                    bool worldPositionStays = data.ReadBool();
 
                     ObjectRegistration reg = null;
                     if(!ServerRegistry.GetObject(id, out reg)) {
@@ -167,14 +168,16 @@ namespace Network {
                             NetworkBehaviour obj = reg.Object;
                             if(obj.transform.AcceptUpdates && (!obj.HasAuthority || obj.transform.AcceptUpdatesWithAuthority)) {
                                 NetworkBridge.Invoke(() => {
-                                    if(newParent == long.MinValue) {
+                                    object newParent = data.ReadSceneObject();
+                                    bool worldPositionStays = data.ReadBool();
+
+                                    if(newParent == null) {
                                         obj.transform.SetParent((Transform) null, worldPositionStays);
                                     } else {
-                                        ObjectRegistration parentObj;
-                                        if(!ServerRegistry.GetObject(newParent, out parentObj)) {
-                                            Debug.LogWarning("Received malformed data packet with type: " + dType + ": invalid parent object id: " + newParent);
-                                        } else {
-                                            obj.transform.SetParent(parentObj.Object.transform, worldPositionStays);
+                                        if(newParent is ObjectRegistration) {
+                                            obj.transform.SetParent(((ObjectRegistration) newParent).Object.transform, worldPositionStays);
+                                        } else if(newParent is Transform) {
+                                            obj.transform.SetParent((Transform) newParent, worldPositionStays);
                                         }
                                     }
                                 });
@@ -194,7 +197,7 @@ namespace Network {
                         Debug.LogWarning("Received malformed data packet with type: " + dType + ": invalid object id: " + id);
                     } else {
                         if(reg.ClientOwner == clientId) {
-                            NetworkBridge.Invoke(() => reg.Object.UpdateLocalField(fieldName, value));
+                            NetworkBridge.Invoke(() => reg.Object.SetLocal(fieldName, value));
 
                             foreach(long userId in ServerRegistry.GetOtherClientIDs(clientId)) {
                                 Socket to = ServerRegistry.Clients[userId];
@@ -274,11 +277,11 @@ namespace Network {
                                 client.Buffer.WriteQuaternion(reg.Object.transform.rotation);
 
                                 Transform parent = reg.Object.transform.parent;
-                                NetworkBehaviour parentNet = null;
+                                /* NetworkBehaviour parentNet = null;
                                 if(parent != null) {
                                     parentNet = parent.gameObject.GetComponent<NetworkBehaviour>();
-                                }
-                                client.Buffer.WriteLong(parentNet == null ? long.MinValue : parentNet.NetworkId);
+                                } */
+                                client.Buffer.WriteSceneObject(parent);
                                 client.Buffer.WriteByte((byte) reg.ChildIds.Length);
                                 foreach(long cid in reg.ChildIds) {
                                     client.Buffer.WriteLong(cid);
@@ -313,7 +316,8 @@ namespace Network {
                         string resourcePath = data.ReadString();
                         Vector3 position = data.ReadVector3();
                         Quaternion rotation = data.ReadQuaternion();
-                        long parentId = data.ReadLong();
+                        object parent = null;
+                        NetworkBridge.AwaitInvoke(() => parent = data.ReadSceneObject());
                         byte childCount = data.ReadByte();
 
                         long[] childIds = new long[childCount];
@@ -334,12 +338,14 @@ namespace Network {
                             net.transform.position = position;
                             net.transform.rotation = rotation;
 
-                            if(parentId == long.MinValue) {
+                            if(parent == null) {
                                 net.transform.Detach();
                             } else {
-                                NetworkBehaviour parentObj;
-                                ClientRegistry.GetObject(parentId, out parentObj);
-                                net.transform.SetParent(parentObj.transform);
+                                if(parent is NetworkBehaviour) {
+                                    net.transform.SetParent(((NetworkBehaviour) parent).transform);
+                                } else if(parent is Transform) {
+                                    net.transform.SetParent((Transform) parent);
+                                }
                             }
 
                             int i = 0;
@@ -377,21 +383,25 @@ namespace Network {
                             });
                         }
                     } else if(dType == UpdateParent) {
-                        long newParent = data.ReadLong();
-                        bool worldPositionStays = data.ReadBool();
-
                         if(obj.transform.AcceptUpdates && (!obj.HasAuthority || obj.transform.AcceptUpdatesWithAuthority)) {
                             NetworkBridge.Invoke(() => {
-                                if(newParent == long.MinValue) {
+                                // ReadSceneObject needs to be called from an invocation to the bridge.
+                                // is this safe?
+                                object newParent = data.ReadSceneObject();
+                                bool worldPositionStays = data.ReadBool();
+
+                                bool old = obj.transform.UseNetwork;
+                                obj.transform.UseNetwork = false;
+                                if(newParent == null) {
                                     obj.transform.SetParent((Transform) null, worldPositionStays);
                                 } else {
-                                    NetworkBehaviour parentObj;
-                                    if(!ClientRegistry.GetObject(newParent, out parentObj)) {
-                                        Debug.LogWarning("Received malformed data packet with type: " + dType + ": invalid parent object id: " + newParent);
-                                    } else {
-                                        obj.transform.SetParent(parentObj.transform, worldPositionStays);
+                                    if(newParent is NetworkBehaviour) {
+                                        obj.transform.SetParent(((NetworkBehaviour) newParent).transform, worldPositionStays);
+                                    } else if(newParent is Transform) {
+                                        obj.transform.SetParent((Transform) newParent, worldPositionStays);
                                     }
                                 }
+                                obj.transform.UseNetwork = old;
                             });
                         }
                     } else if(dType == UpdateField) {
@@ -399,7 +409,7 @@ namespace Network {
                         byte dataType = data.ReadByte();
                         object value = ReadObject(data, dataType);
 
-                        NetworkBridge.Invoke(() => obj.UpdateLocalField(fieldName, value));
+                        NetworkBridge.Invoke(() => obj.SetLocal(fieldName, value));
                     } else if(dType == InvokeRPC) {
                         string methodName = data.ReadString();
                         byte argCount = data.ReadByte();

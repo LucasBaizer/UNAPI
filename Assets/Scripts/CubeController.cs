@@ -26,7 +26,7 @@ public class CubeController : NetworkBehaviour {
         Debug.Log("Side: " + Side.NetworkSide);
         InvokeRemote("SomethingRemoteParameterized", Value - 1);
 
-        NetworkBehaviour instance = Server.Instantiate("GenericCube", Vector3.up, Quaternion.identity, this);
+        NetworkBehaviour instance = Server.Instantiate("GenericCube", new Vector3(0f, 2f, 0f), Quaternion.identity, GameObject.Find("Plane").transform);
     }
 
     [RemoteMethod]
