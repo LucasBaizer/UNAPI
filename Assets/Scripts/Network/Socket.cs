@@ -3,7 +3,7 @@ using System.Net.Sockets;
 
 namespace Network {
     public class Socket {
-        public const int PacketSize = 128;
+        public const int PacketSize = 2048;
 
         public ByteBuffer Buffer = new ByteBuffer(PacketSize);
 
@@ -18,6 +18,7 @@ namespace Network {
         public Socket(string host, int tcpPort, int udpPort) {
             TcpRemote = new IPEndPoint(IPAddress.Parse(host), tcpPort);
             Tcp = new TcpClient();
+            Tcp.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
 
             NetworkBridge.Log("Connecting to TCP server...");
             Tcp.Connect(TcpRemote);
@@ -38,13 +39,43 @@ namespace Network {
         }
 
         public void WriteBufferTcp() {
-            Tcp.GetStream().Write(Buffer.Bytes, 0, Buffer.Pointer);
+            try {
+                ByteBuffer lengthBuffer = new ByteBuffer(4 + Buffer.Pointer);
+                lengthBuffer.WriteInt(Buffer.Pointer);
+                Buffer.CopyTo(lengthBuffer);
 
-            Buffer.Reset();
-            Buffer.Clear();
+                Tcp.GetStream().Write(lengthBuffer.Bytes, 0, lengthBuffer.Pointer);
+                Tcp.GetStream().Flush();
+
+                Buffer.Reset();
+                Buffer.Clear();
+            } catch(System.IO.IOException) {
+                NetworkBridge.Warn("Connection to remote is closed; closing connection.");
+
+                if(Side.IsServer) {
+                    lock(ServerRegistry.Clients) {
+                        long toRemove = long.MinValue;
+                        foreach(long id in ServerRegistry.Clients.Keys) {
+                            if(this == ServerRegistry.Clients[id]) {
+                                toRemove = id;
+                            }
+                        }
+                        if(toRemove != long.MinValue) {
+                            ServerRegistry.Clients.Remove(toRemove); // we do this to prevent a ConcurrentModificationException... if that exists in C#
+                        } else {
+                            NetworkBridge.Warn("Could not remove the client; their ID was not found in the registry.");
+                        }
+                    }
+                } else if(Side.IsClient) {
+                    Client.Current.Close();
+                }
+            }
         }
 
         public void WriteBufferUdp() {
+            if(Udp == null) {
+                throw new System.InvalidOperationException("Udp socket is null");
+            }
             if(!SpecificUdp) {
                 Udp.Send(Buffer.Bytes, Buffer.Pointer);
             } else {

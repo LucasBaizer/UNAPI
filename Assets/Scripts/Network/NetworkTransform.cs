@@ -10,6 +10,7 @@ namespace Network {
         public bool UseNetwork;
         public bool AcceptUpdates = true;
         public bool AcceptUpdatesWithAuthority = false;
+        public bool RequiresAuthority = true;
         private NetworkBehaviour Net;
 
         public NetworkTransform(NetworkBehaviour net, Transform transform) {
@@ -18,33 +19,54 @@ namespace Network {
         }
 
         private void WritePosition(Vector3 position) {
-            if(Side.IsClient && Net.HasAuthority) {
-                Client.Current.PushUpdatePosition(Net, position);
+            if(Side.IsClient && (!RequiresAuthority || Net.HasAuthority)) {
+                Client.Current.PushUpdateTransform(Net, position, 1);
             } else if(Side.IsServer) {
-                foreach(long userId in ServerRegistry.Clients.Keys) {
-                    Socket to = ServerRegistry.Clients[userId];
-                    to.Buffer.WriteByte(NetworkData.Data);
-                    to.Buffer.WriteByte(NetworkData.UpdateTransform);
-                    to.Buffer.WriteLong(Net.NetworkId);
-                    to.Buffer.WriteByte(NetworkData.Vector3Type);
-                    to.Buffer.WriteVector3(position);
-                    to.WriteBufferUdp();
+                foreach(Socket to in ServerRegistry.Clients.Values) {
+                    lock(to.Buffer) {
+                        to.Buffer.WriteByte(NetworkData.Data);
+                        to.Buffer.WriteByte(NetworkData.UpdateTransform);
+                        to.Buffer.WriteLong(Net.NetworkId);
+                        to.Buffer.WriteByte(NetworkData.Vector3Type);
+                        to.Buffer.WriteVector3(position);
+                        to.Buffer.WriteByte(1);
+                        to.WriteBufferUdp();
+                    }
+                }
+            }
+        }
+
+        private void WriteScale(Vector3 position) {
+            if(Side.IsClient && (!RequiresAuthority || Net.HasAuthority)) {
+                Client.Current.PushUpdateTransform(Net, position, 2);
+            } else if(Side.IsServer) {
+                foreach(Socket to in ServerRegistry.Clients.Values) {
+                    lock(to.Buffer) {
+                        to.Buffer.WriteByte(NetworkData.Data);
+                        to.Buffer.WriteByte(NetworkData.UpdateTransform);
+                        to.Buffer.WriteLong(Net.NetworkId);
+                        to.Buffer.WriteByte(NetworkData.Vector3Type);
+                        to.Buffer.WriteVector3(position);
+                        to.Buffer.WriteByte(2);
+                        to.WriteBufferUdp();
+                    }
                 }
             }
         }
 
         private void WriteRotation(Quaternion rotation) {
-            if(Side.IsClient && Net.HasAuthority) {
-                Client.Current.PushUpdatePosition(Net, rotation);
+            if(Side.IsClient && (!RequiresAuthority || Net.HasAuthority)) {
+                Client.Current.PushUpdateTransform(Net, rotation, 0);
             } else if(Side.IsServer) {
-                foreach(long userId in ServerRegistry.Clients.Keys) {
-                    Socket to = ServerRegistry.Clients[userId];
-                    to.Buffer.WriteByte(NetworkData.Data);
-                    to.Buffer.WriteByte(NetworkData.UpdateTransform);
-                    to.Buffer.WriteLong(Net.NetworkId);
-                    to.Buffer.WriteByte(NetworkData.QuaternionType);
-                    to.Buffer.WriteQuaternion(rotation);
-                    to.WriteBufferUdp();
+                foreach(Socket to in ServerRegistry.Clients.Values) {
+                    lock(to.Buffer) {
+                        to.Buffer.WriteByte(NetworkData.Data);
+                        to.Buffer.WriteByte(NetworkData.UpdateTransform);
+                        to.Buffer.WriteLong(Net.NetworkId);
+                        to.Buffer.WriteByte(NetworkData.QuaternionType);
+                        to.Buffer.WriteQuaternion(rotation);
+                        to.WriteBufferUdp();
+                    }
                 }
             }
         }
@@ -158,6 +180,23 @@ namespace Network {
             }
             set {
                 Transform.localScale = value;
+
+                if(UseNetwork) {
+                    WriteScale(lossyScale);
+                }
+            }
+        }
+
+        public Vector3 lossyScale {
+            get {
+                return Transform.lossyScale;
+            }
+            set {
+                Transform.SetGlobalScale(value);
+
+                if(UseNetwork) {
+                    WriteScale(value);
+                }
             }
         }
 
@@ -179,7 +218,7 @@ namespace Network {
             return Transform.Find(name);
         }
 
-        public void Detach() {
+        /* public void Detach() {
             Transform.SetParent(null);
 
             if(!UseNetwork) {
@@ -189,10 +228,10 @@ namespace Network {
             Client.Current.WriteHeader(NetworkData.UpdateParent);
             Client.Out.WriteLong(long.MinValue);
             Client.Current.WriteTcp();
-        }
+        } */
 
         public void SetParent(NetworkTransform parent) {
-            SetParent(parent.Transform);
+            SetParent(parent == null ? null : parent.Transform);
         }
 
         public void SetParent(Transform parent) {
@@ -204,27 +243,33 @@ namespace Network {
         }
 
         public void SetParent(Transform parent, bool worldPositionStays) {
-            if(parent == null) {
-                Detach();
-            }
+            SetParent(parent, worldPositionStays, true);
+        }
 
-            Transform.SetParent(parent, worldPositionStays);
+        public void SetParent(Transform parent, bool worldPositionStays, bool here) {
+            if(here) {
+                /* if(parent == null) {
+                    Detach();
+                } */
 
-            NetworkBehaviour net = parent.GetComponent<NetworkBehaviour>();
-            if(net == null) {
-                // throw new InvalidOperationException("Cannot set the parent of a networked object to a non-networked object");
-                return;
+                Transform.SetParent(parent, worldPositionStays);
             }
 
             if(!UseNetwork) {
                 return;
             }
 
+            NetworkBehaviour net = parent == null ? null : parent.GetComponent<NetworkBehaviour>();
+            object sceneObject = net;
+            if(net == null) {
+                sceneObject = parent;
+            }
+
             if(Side.IsClient) {
-                if(Net.HasAuthority) {
+                if(!RequiresAuthority || Net.HasAuthority) {
                     Client.Current.WriteHeader(NetworkData.UpdateParent);
                     Client.Out.WriteLong(Net.NetworkId);
-                    Client.Out.WriteLong(net.NetworkId);
+                    Client.Out.WriteSceneObject(sceneObject);
                     Client.Out.WriteBool(worldPositionStays);
                     Client.Current.WriteTcp();
                 } else {
@@ -232,12 +277,14 @@ namespace Network {
                 }
             } else if(Side.IsServer) {
                 foreach(Socket client in ServerRegistry.Clients.Values) {
-                    client.Buffer.WriteByte(NetworkData.Data);
-                    client.Buffer.WriteByte(NetworkData.UpdateParent);
-                    client.Buffer.WriteLong(Net.NetworkId);
-                    client.Buffer.WriteLong(net.NetworkId);
-                    client.Buffer.WriteBool(worldPositionStays);
-                    client.WriteBufferTcp();
+                    lock(client.Buffer) {
+                        client.Buffer.WriteByte(NetworkData.Data);
+                        client.Buffer.WriteByte(NetworkData.UpdateParent);
+                        client.Buffer.WriteLong(Net.NetworkId);
+                        client.Buffer.WriteSceneObject(sceneObject);
+                        client.Buffer.WriteBool(worldPositionStays);
+                        client.WriteBufferTcp();
+                    }
                 }
             }
         }

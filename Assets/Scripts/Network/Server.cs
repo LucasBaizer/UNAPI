@@ -47,8 +47,7 @@ namespace Network {
         public Server(ServerConfiguration config) {
             Config = config;
 
-            IPAddress localhost = IPAddress.Parse("127.0.0.1");
-            TcpServer = new TcpListener(localhost, config.TcpPort);
+            TcpServer = new TcpListener(IPAddress.Any, config.TcpPort);
             UdpServer = new UdpClient(config.UdpPort);
 
             NetworkBridge.Log("Started TCP and UDP servers.");
@@ -67,9 +66,11 @@ namespace Network {
 
                     if(Closed) { // disconnect socket that connected after server closed: is this necessary?
                         NetworkBridge.Log("Kicked client.");
-                        socket.Buffer.WriteByte(NetworkData.Management);
-                        socket.Buffer.WriteByte(NetworkData.Disconnect);
-                        socket.WriteBufferTcp();
+                        lock(socket.Buffer) {
+                            socket.Buffer.WriteByte(NetworkData.Management);
+                            socket.Buffer.WriteByte(NetworkData.Disconnect);
+                            socket.WriteBufferTcp();
+                        }
                         return;
                     }
 
@@ -77,13 +78,14 @@ namespace Network {
                         while(!Closed) {
                             byte[] raw = new byte[Socket.PacketSize];
                             int read = tcp.Read(raw, 0, raw.Length);
-                            NetworkBridge.Log("Read TCP data.");
 
                             if(Closed) {
                                 NetworkBridge.Log("Kicked client.");
-                                socket.Buffer.WriteByte(NetworkData.Management);
-                                socket.Buffer.WriteByte(NetworkData.Disconnect);
-                                socket.WriteBufferTcp();
+                                lock(socket.Buffer) {
+                                    socket.Buffer.WriteByte(NetworkData.Management);
+                                    socket.Buffer.WriteByte(NetworkData.Disconnect);
+                                    socket.WriteBufferTcp();
+                                }
                                 return;
                             }
 
@@ -91,10 +93,18 @@ namespace Network {
                             Array.Copy(raw, trimmed, read);
 
                             ByteBuffer bufIn = new ByteBuffer(trimmed);
+                            List<ByteBuffer> buffers = new List<ByteBuffer>();
+                            while(bufIn.Pointer != bufIn.Length) {
+                                int len = bufIn.ReadInt();
+                                ByteBuffer buffer = new ByteBuffer(bufIn.ReadBytes(len));
+                                buffers.Add(buffer);
+                            }
                             try {
-                                NetworkData.HandleServerData(bufIn, socket);
+                                foreach(ByteBuffer buffer in buffers) {
+                                    NetworkData.HandleServerData(buffer, socket);
+                                }
                             } catch(Exception e) {
-                                NetworkBridge.Invoke(() => UnityEngine.Debug.LogException(e));
+                                NetworkBridge.Invoke(() => Debug.LogException(e));
                             }
                         }
                     });
@@ -119,7 +129,7 @@ namespace Network {
 
                     ByteBuffer bufIn = new ByteBuffer(raw);
                     byte bufferCount = bufIn.ReadByte();
-                    NetworkBridge.Log("Received " + bufferCount + " buffer(s) of UDP data.");
+                    // NetworkBridge.Log("Received " + bufferCount + " buffer(s) of UDP data.");
                     for(int i = 0; i < bufferCount; i++) {
                         byte bufferLength = bufIn.ReadByte();
                         byte[] buffer = bufIn.ReadBytes(bufferLength);
@@ -140,10 +150,12 @@ namespace Network {
         public void Close() {
             foreach(long clientId in ServerRegistry.Clients.Keys) {
                 Socket client = ServerRegistry.Clients[clientId];
-                client.Buffer.WriteByte(NetworkData.Management);
-                client.Buffer.WriteByte(NetworkData.Disconnect);
-                client.WriteBufferTcp();
-                client.Tcp.Close();
+                lock(client.Buffer) {
+                    client.Buffer.WriteByte(NetworkData.Management);
+                    client.Buffer.WriteByte(NetworkData.Disconnect);
+                    client.WriteBufferTcp();
+                    client.Tcp.Close();
+                }
             }
 
             TcpServer.Stop();
@@ -166,16 +178,30 @@ namespace Network {
         }
 
         public static NetworkBehaviour Instantiate(string resource, Vector3 position, Quaternion rotation, object parent) {
+            return Instantiate(resource, position, rotation, Vector3.zero, parent);
+        }
+
+        public static NetworkBehaviour Instantiate(string resource, Vector3 position, Quaternion rotation, Vector3 scale, object parent) {
             if(!Side.IsServer) {
                 throw new InvalidOperationException("Cannot call server-side functions when not on the server");
             }
 
             GameObject attempt = (GameObject) Resources.Load(resource);
+            if(attempt == null) {
+                throw new InvalidOperationException("Resource does not exist");
+            }
             GameObject inst = UnityEngine.Object.Instantiate(attempt, position, rotation);
             inst.name = attempt.name;
 
             NetworkBehaviour net = inst.GetComponent<NetworkBehaviour>();
+            if(net == null) {
+                throw new InvalidOperationException("Resource must be a NetworkBehaviour");
+            }
             net.transform.UseNetwork = false;
+
+            if(scale != Vector3.zero) {
+                net.transform.lossyScale = scale;
+            }
 
             if(parent != null) {
                 if(parent is NetworkBehaviour) {
@@ -214,19 +240,22 @@ namespace Network {
             }
 
             foreach(Socket client in ServerRegistry.Clients.Values) {
-                client.Buffer.WriteByte(NetworkData.Data);
-                client.Buffer.WriteByte(NetworkData.InstantiateObject);
-                client.Buffer.WriteLong(net.NetworkId);
-                client.Buffer.WriteBool(false);
-                client.Buffer.WriteString(resource);
-                client.Buffer.WriteVector3(position);
-                client.Buffer.WriteQuaternion(rotation);
-                client.Buffer.WriteSceneObject(parent);
-                client.Buffer.WriteByte((byte) childIds.Count);
-                foreach(long cid in childIds) {
-                    client.Buffer.WriteLong(cid);
+                lock(client.Buffer) {
+                    client.Buffer.WriteByte(NetworkData.Data);
+                    client.Buffer.WriteByte(NetworkData.InstantiateObject);
+                    client.Buffer.WriteLong(net.NetworkId);
+                    client.Buffer.WriteBool(false);
+                    client.Buffer.WriteString(resource);
+                    client.Buffer.WriteVector3(position);
+                    client.Buffer.WriteQuaternion(rotation);
+                    client.Buffer.WriteVector3(scale == Vector3.zero ? attempt.transform.lossyScale : scale);
+                    client.Buffer.WriteSceneObject(parent);
+                    client.Buffer.WriteByte((byte) childIds.Count);
+                    foreach(long cid in childIds) {
+                        client.Buffer.WriteLong(cid);
+                    }
+                    client.WriteBufferTcp();
                 }
-                client.WriteBufferTcp();
             }
 
             return net;
@@ -246,10 +275,12 @@ namespace Network {
             }
 
             foreach(Socket client in ServerRegistry.Clients.Values) {
-                client.Buffer.WriteByte(NetworkData.Data);
-                client.Buffer.WriteByte(NetworkData.DestroyObject);
-                client.Buffer.WriteLong(net.NetworkId);
-                client.WriteBufferTcp();
+                lock(client.Buffer) {
+                    client.Buffer.WriteByte(NetworkData.Data);
+                    client.Buffer.WriteByte(NetworkData.DestroyObject);
+                    client.Buffer.WriteLong(net.NetworkId);
+                    client.WriteBufferTcp();
+                }
             }
 
             UnityEngine.Object.Destroy(net.gameObject);
@@ -262,7 +293,7 @@ namespace Network {
         public int TickRate;
 
         public static ServerConfiguration Default() {
-            return new ServerConfiguration(9292, 9293, 1);
+            return new ServerConfiguration(9292, 9293, 30);
         }
 
         public ServerConfiguration(int tcp, int udp, int tick) {

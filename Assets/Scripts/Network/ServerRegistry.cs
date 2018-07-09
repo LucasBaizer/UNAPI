@@ -3,20 +3,40 @@
 namespace Network {
     public class ServerRegistry {
         public static Dictionary<long, Socket> Clients = new Dictionary<long, Socket>();
-        public static Dictionary<long, ObjectRegistration> Objects = new Dictionary<long, ObjectRegistration>();
+        public static OrderedDictionary<long, ObjectRegistration> Objects = new OrderedDictionary<long, ObjectRegistration>();
 
         public static IEnumerable<Socket> GetOtherClients(long id) {
-            foreach(long otherId in Clients.Keys) {
-                if(otherId != id) {
-                    yield return Clients[otherId];
+            lock(Clients) {
+                foreach(long otherId in Clients.Keys) {
+                    if(otherId != id) {
+                        yield return Clients[otherId];
+                    }
                 }
             }
         }
 
+        public static IEnumerable<long> GetClientIDs() {
+            lock(Clients) {
+                List<long> keys = new List<long>();
+                foreach(long key in Clients.Keys) {
+                    keys.Add(key);
+                }
+                return keys;
+            }
+        }
+
+        public static Socket GetClient(long id) {
+            lock(Clients) {
+                return Clients[id];
+            }
+        }
+
         public static IEnumerable<long> GetOtherClientIDs(long id) {
-            foreach(long otherId in Clients.Keys) {
-                if(otherId != id) {
-                    yield return otherId;
+            lock(ServerRegistry.Clients) {
+                foreach(long otherId in Clients.Keys) {
+                    if(otherId != id) {
+                        yield return otherId;
+                    }
                 }
             }
         }

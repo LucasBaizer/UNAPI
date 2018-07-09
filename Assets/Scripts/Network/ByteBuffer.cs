@@ -24,9 +24,30 @@ namespace Network {
             Bytes = buffer;
         }
 
+        public void Debug(int start, int end) {
+            string str = "";
+            for(int i = start; i < end; i++) {
+                str += Bytes[i] + " ";
+            }
+            NetworkBridge.Log(str);
+        }
+
+        /// <summary>
+        /// Copies all the bytes up until the pointer, and puts them into a new buffer.
+        /// </summary>
         public ByteBuffer Copy() {
             byte[] newBytes = new byte[Pointer];
             Array.Copy(Bytes, newBytes, Pointer);
+
+            return new ByteBuffer(newBytes);
+        }
+
+        /// <summary>
+        /// Copies all the bytes in the buffer, and puts them into a new buffer.
+        /// </summary>
+        public ByteBuffer CopyAll() {
+            byte[] newBytes = new byte[Length];
+            Array.Copy(Bytes, newBytes, Length);
 
             return new ByteBuffer(newBytes);
         }
@@ -83,6 +104,16 @@ namespace Network {
                 throw new IndexOutOfRangeException("Pointer exceeds length: " + Pointer);
             }
             return Bytes[Pointer++];
+        }
+
+        public void WriteObject(object obj) {
+            byte[] serial = SerialUtility.Serialize(obj);
+            WriteInt(serial.Length);
+            WriteBytes(serial);
+        }
+
+        public object ReadObject() {
+            return SerialUtility.Deserialize(ReadBytes(ReadInt()));
         }
 
         public void WriteBytes(byte[] bytes) {
@@ -205,12 +236,19 @@ namespace Network {
         }
 
         public void WriteString(string str) {
-            WriteByte((byte) str.Length);
-            WriteBytes(Encoding.UTF8.GetBytes(str));
+            if(string.IsNullOrEmpty(str)) {
+                WriteByte(0);
+            } else {
+                WriteByte((byte) str.Length);
+                WriteBytes(Encoding.UTF8.GetBytes(str));
+            }
         }
 
         public string ReadString() {
             byte length = ReadByte();
+            if(length == 0) {
+                return "";
+            }
             return Encoding.UTF8.GetString(ReadBytes(length), 0, length);
         }
 
@@ -233,6 +271,10 @@ namespace Network {
 
         private static Transform GetTransform(string path) {
             return GameObject.Find(path).transform;
+        }
+
+        public static implicit operator byte[] (ByteBuffer buf) {
+            return buf.Bytes;
         }
     }
 }

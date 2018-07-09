@@ -30,6 +30,7 @@ namespace Network {
                 return Current != null;
             }
         }
+        public bool IsAuthenticated;
 
         public static event EventHandler<EventArgs> OnConnect;
 
@@ -57,19 +58,34 @@ namespace Network {
             Thread tcpThread = new Thread(() => {
                 Stream tcp = Socket.Tcp.GetStream();
                 while(!Closed) {
+                    // NetworkBridge.Log("Waiting to read TCP...");
                     byte[] raw = new byte[Socket.PacketSize];
-                    tcp.Read(raw, 0, raw.Length);
-                    NetworkBridge.Log("Received TCP data.");
+                    int read = tcp.Read(raw, 0, raw.Length);
+                    byte[] trim = new byte[read];
+                    Array.Copy(raw, 0, trim, 0, trim.Length);
 
                     if(Closed) {
                         break;
                     }
 
-                    ByteBuffer bufIn = new ByteBuffer(raw);
+                    ByteBuffer bufIn = new ByteBuffer(trim);
+                    // bufIn.Debug(0, bufIn.Length);
+                    // NetworkBridge.Log("Sub-Buffers: ");
+                    List<ByteBuffer> buffers = new List<ByteBuffer>();
+                    while(bufIn.Pointer != bufIn.Length) {
+                        int len = bufIn.ReadInt();
+                        ByteBuffer buf = new ByteBuffer(bufIn.ReadBytes(len));
+                        // buf.Debug(0, buf.Length);
+                        buffers.Add(buf);
+                    }
                     try {
-                        NetworkData.HandleClientData(bufIn);
+                        // Debug.Log("Executing buffers: ");
+                        foreach(ByteBuffer buffer in buffers) {
+                            // buffer.Debug(0, buffer.Length);
+                            NetworkData.HandleClientData(buffer);
+                        }
                     } catch(Exception e) {
-                        Debug.LogException(e);
+                        NetworkBridge.Invoke(() => Debug.LogException(e));
                     }
                 }
             });
@@ -105,11 +121,14 @@ namespace Network {
             OnAuthenticate += (sender, args) => {
                 Thread updateThread = new Thread(() => {
                     while(IsConnected) {
-                        if(UdpBuffers.Count > 0) {
-                            WriteUdp();
-                            UdpBuffers.Clear();
-                            PositionUpdates.Clear();
-                            RotationUpdates.Clear();
+                        lock(UdpBuffers) {
+                            if(UdpBuffers.Count > 0) {
+                                WriteUdp();
+                                UdpBuffers.Clear();
+                                PositionUpdates.Clear();
+                                RotationUpdates.Clear();
+                                ScaleUpdates.Clear();
+                            }
                         }
 
                         Thread.Sleep((int) (1000 / (float) TickRate));
@@ -123,37 +142,50 @@ namespace Network {
         private List<byte[]> UdpBuffers = new List<byte[]>();
         private Dictionary<NetworkBehaviour, int> PositionUpdates = new Dictionary<NetworkBehaviour, int>();
         private Dictionary<NetworkBehaviour, int> RotationUpdates = new Dictionary<NetworkBehaviour, int>();
+        private Dictionary<NetworkBehaviour, int> ScaleUpdates = new Dictionary<NetworkBehaviour, int>();
 
-        public void PushUpdatePosition(NetworkBehaviour source, object update) {
+        public void PushUpdateTransform(NetworkBehaviour source, object update, byte code) {
             byte type = update is Vector3 ? NetworkData.Vector3Type : NetworkData.QuaternionType;
 
-            WriteHeader(NetworkData.UpdateTransform);
-            Out.WriteLong(source.NetworkId);
-            Out.WriteByte(type);
-            if(type == NetworkData.Vector3Type) {
-                Out.WriteVector3((Vector3) update);
-            } else if(type == NetworkData.QuaternionType) {
-                Out.WriteQuaternion((Quaternion) update);
+            lock(Out) {
+                WriteHeader(NetworkData.UpdateTransform);
+                Out.WriteLong(source.NetworkId);
+                Out.WriteByte(type);
+                if(type == NetworkData.Vector3Type) {
+                    Out.WriteVector3((Vector3) update);
+                } else if(type == NetworkData.QuaternionType) {
+                    Out.WriteQuaternion((Quaternion) update);
+                }
+
+                if(code > 0) {
+                    Out.WriteByte(code);
+                }
+
+                ByteBuffer copy = Out.Copy();
+
+                if(type == NetworkData.Vector3Type) {
+                    if(code == 1) {
+                        PushUpdate(PositionUpdates, source, copy);
+                    } else if(code == 2) {
+                        PushUpdate(ScaleUpdates, source, copy);
+                    }
+                } else if(type == NetworkData.QuaternionType) {
+                    PushUpdate(RotationUpdates, source, copy);
+                }
+
+                Out.Reset();
+                Out.Clear();
             }
-
-            ByteBuffer copy = Out.Copy();
-
-            if(type == NetworkData.Vector3Type) {
-                PushUpdate(PositionUpdates, source, copy);
-            } else if(type == NetworkData.QuaternionType) {
-                PushUpdate(RotationUpdates, source, copy);
-            }
-
-            Out.Reset();
-            Out.Clear();
         }
 
         private void PushUpdate(Dictionary<NetworkBehaviour, int> dict, NetworkBehaviour source, ByteBuffer copy) {
-            if(dict.ContainsKey(source)) {
-                UdpBuffers[dict[source]] = copy.Bytes;
-            } else {
-                dict[source] = UdpBuffers.Count;
-                UdpBuffers.Add(copy.Bytes);
+            lock(UdpBuffers) {
+                if(dict.ContainsKey(source)) {
+                    UdpBuffers[dict[source]] = copy.Bytes;
+                } else {
+                    dict[source] = UdpBuffers.Count;
+                    UdpBuffers.Add(copy.Bytes);
+                }
             }
         }
 
@@ -176,7 +208,6 @@ namespace Network {
 
         public void WriteUdp() {
             Socket.Buffer = CollectUdp();
-            NetworkBridge.Log("Writing " + Socket.Buffer.Pointer + " bytes of UDP data.");
             Socket.WriteBufferUdp();
         }
 
@@ -201,6 +232,7 @@ namespace Network {
         }
 
         public void NotifyAuthenticate() {
+            IsAuthenticated = true;
             if(OnAuthenticate != null) {
                 OnAuthenticate(this, EventArgs.Empty);
             }
@@ -215,26 +247,34 @@ namespace Network {
         }
 
         public static void Instantiate(string resource, Vector3 position, Quaternion rotation, object parent) {
+            Instantiate(resource, position, rotation, parent, true);
+        }
+
+        public static void Instantiate(string resource, Vector3 position, Quaternion rotation, object parent, bool here) {
             if(!Side.IsClient) {
                 throw new InvalidOperationException("Cannot call client-side functions when not on the client");
             }
 
             GameObject attempt = (GameObject) Resources.Load(resource);
 
-            Current.WriteHeader(NetworkData.InstantiateObject);
-            Out.WriteString(resource);
-            Out.WriteVector3(position);
-            Out.WriteQuaternion(rotation);
-            Out.WriteSceneObject(parent);
-            byte count = 0;
-            foreach(Transform child in attempt.transform) {
-                NetworkBehaviour c = child.GetComponent<NetworkBehaviour>();
-                if(c != null) {
-                    count++;
+            lock(Out) {
+                Current.WriteHeader(NetworkData.InstantiateObject);
+                Out.WriteString(resource);
+                Out.WriteVector3(position);
+                Out.WriteQuaternion(rotation);
+                Out.WriteVector3(attempt.transform.lossyScale);
+                Out.WriteSceneObject(parent);
+                Out.WriteBool(here);
+                byte count = 0;
+                foreach(Transform child in attempt.transform) {
+                    NetworkBehaviour c = child.GetComponent<NetworkBehaviour>();
+                    if(c != null) {
+                        count++;
+                    }
                 }
+                Out.WriteByte(count);
+                Current.WriteTcp();
             }
-            Out.WriteByte(count);
-            Current.WriteTcp();
         }
 
         public static void Destroy(GameObject obj) {
@@ -250,9 +290,44 @@ namespace Network {
                 throw new NullReferenceException("Object to destroy must be an existing networked object");
             }
 
-            Current.WriteHeader(NetworkData.DestroyObject);
-            Out.WriteLong(net.NetworkId);
-            Current.WriteTcp();
+            lock(Out) {
+                Current.WriteHeader(NetworkData.DestroyObject);
+                Out.WriteLong(net.NetworkId);
+                Current.WriteTcp();
+            }
+        }
+
+        public delegate void QueryCallback(ByteBuffer data);
+
+        private static long QueryNonce = 0;
+        internal static Dictionary<long, QueryCallback> Queries = new Dictionary<long, QueryCallback>();
+
+        public static void Query(string data, QueryCallback then, params object[] args) {
+            if(!Side.IsClient) {
+                throw new InvalidOperationException("Cannot call client-side functions when not on the client");
+            }
+
+            Queries[QueryNonce] = then;
+            Debug.Log("Querying data: " + data + "...");
+
+            lock(Out) {
+                Out.WriteByte(NetworkData.QueryDatabase);
+                Out.WriteLong(QueryNonce++);
+                Out.WriteString(data);
+                Out.WriteByte((byte) args.Length);
+                foreach(object arg in args) {
+                    Out.WriteByte(NetworkData.GetObjectType(arg));
+                    NetworkData.WriteObject(arg, Out);
+                }
+
+                Current.WriteTcp();
+            }
+        }
+
+        public delegate void QueryObjectCallback<T>(T data);
+
+        public static void Query<T>(string data, QueryObjectCallback<T> then, params object[] args) {
+            Query(data, raw => then((T) SerialUtility.Deserialize(raw)), args);
         }
     }
 }

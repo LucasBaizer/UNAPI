@@ -11,10 +11,13 @@ namespace Network {
         public static NetworkBridge Instance;
 
         public List<Invocation> Invocations = new List<Invocation>();
+        private Thread UnityThread;
         private object Lock = new object();
+        private object AddLock = new object();
 
         void Awake() {
             Instance = this;
+            UnityThread = Thread.CurrentThread;
             Application.runInBackground = true;
         }
 
@@ -25,15 +28,16 @@ namespace Network {
         }
 
         private IEnumerator InvokeCoroutine() {
-            Invocation[] clone = new Invocation[Invocations.Count];
-            for(int i = 0; i < clone.Length; i++) {
-                if(i < Invocations.Count) {
+            Invocation[] clone;
+
+            lock(AddLock) {
+                clone = new Invocation[Invocations.Count];
+                for(int i = 0; i < clone.Length; i++) {
                     clone[i] = Invocations[i];
-                } else {
-                    break;
                 }
+                Invocations.Clear();
             }
-            Invocations.Clear();
+
             foreach(Invocation invoke in clone) {
                 try {
                     invoke();
@@ -60,19 +64,32 @@ namespace Network {
             }
         }
 
-        public static void Invoke(Invocation invoke) {
-            Instance.Invocations.Add(invoke);
+        public static bool Invoke(Invocation invoke) {
+            if(Thread.CurrentThread != Instance.UnityThread) {
+                lock(Instance.AddLock) {
+                    Instance.Invocations.Add(invoke);
+                }
+                return true;
+            } else {
+                invoke();
+                return false;
+            }
         }
 
         public static void AwaitInvoke(Invocation invoke) {
-            Invoke(invoke);
-            lock(Instance.Lock) {
-                Monitor.Wait(Instance.Lock);
+            if(Invoke(invoke)) {
+                lock(Instance.Lock) {
+                    Monitor.Wait(Instance.Lock);
+                }
             }
         }
 
         public static void Log(object str) {
-            Invoke(() => Debug.Log(str.ToString()));
+            Invoke(() => Debug.Log(str == null ? "null" : str.ToString()));
+        }
+
+        public static void Warn(object str) {
+            Invoke(() => Debug.LogWarning(str == null ? "null" : str.ToString()));
         }
     }
 }

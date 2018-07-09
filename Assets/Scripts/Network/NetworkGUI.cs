@@ -19,6 +19,10 @@ namespace Network {
                 Thread c = new Thread(() => Client.Connect("127.0.0.1"));
                 c.IsBackground = true;
                 c.Start();
+            } else if(GUI.Button(new Rect(0, 60, 150, 30), "Start Remote Client")) {
+                Thread c = new Thread(() => Client.Connect("107.181.170.46"));
+                c.IsBackground = true;
+                c.Start();
             }
         }
     }
